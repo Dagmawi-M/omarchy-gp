@@ -1,0 +1,51 @@
+#!/bin/sh
+# Root helper for omarchy-gp. It does exactly two things: bring the openconnect
+# tunnel up from an already-authenticated session, and take it down.
+# It never sees the user's password; sign-in happens unprivileged in the panel.
+set -eu
+export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+
+PIDFILE=/run/omarchy-gp-openconnect.pid
+LOG=/run/omarchy-gp-openconnect.log
+IFACE=gpoc0
+
+running() { [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; }
+
+case "${1:-}" in
+up)
+    IFS= read -r URL
+    IFS= read -r FP
+    IFS= read -r RESOLVE
+    IFS= read -r COOKIE
+    printf '%s' "$URL" | grep -Eq '^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._:/-]*)?$' || { echo "bad url" >&2; exit 2; }
+    printf '%s' "$FP" | grep -Eq '^pin-sha256:[A-Za-z0-9+/=]+$' || { echo "bad fingerprint" >&2; exit 2; }
+    [ -z "$RESOLVE" ] || printf '%s' "$RESOLVE" | grep -Eq '^[A-Za-z0-9.-]+:[0-9a-fA-F.:]+$' || { echo "bad resolve" >&2; exit 2; }
+    [ -n "$COOKIE" ] || { echo "no session" >&2; exit 2; }
+    running && exit 0
+    : > "$LOG"; chmod 644 "$LOG"
+    set -- --protocol=gp --cookie-on-stdin --non-inter --servercert "$FP" \
+        --interface "$IFACE" --script /etc/vpnc/vpnc-script \
+        --background --pid-file "$PIDFILE"
+    [ -x /usr/lib/openconnect/hipreport.sh ] && set -- "$@" --csd-wrapper /usr/lib/openconnect/hipreport.sh
+    [ -n "$RESOLVE" ] && set -- "$@" --resolve "$RESOLVE"
+    printf '%s\n' "$COOKIE" | openconnect "$@" "$URL" >>"$LOG" 2>&1
+    chmod 644 "$PIDFILE" 2>/dev/null || true
+    ;;
+down)
+    if running; then
+        kill -INT "$(cat "$PIDFILE")" 2>/dev/null || true
+        i=0
+        while running && [ $i -lt 20 ]; do sleep 0.25; i=$((i + 1)); done
+        running && kill -KILL "$(cat "$PIDFILE")" 2>/dev/null || true
+    fi
+    rm -f "$PIDFILE"
+    ;;
+names)
+    # Read-only dump of the local DNS cache, used to label connections by site.
+    exec resolvectl --no-ask-password show-cache
+    ;;
+*)
+    echo "usage: omarchy-gp-helper up|down|names" >&2
+    exit 2
+    ;;
+esac
