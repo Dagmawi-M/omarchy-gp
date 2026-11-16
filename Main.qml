@@ -33,7 +33,11 @@ Window {
         function onToggleRequested() { if (win.visible && win.active) win.hide(); else win.reveal() }
         function onCopied() { copiedNote.restart() }
         function onAccountNeeded() { account.reveal() }
-        function onWindowRequested(name) { if (name === "traffic") { traffic.show(); traffic.raise() } else account.reveal() }
+        function onWindowRequested(name) {
+            if (name === "traffic") { traffic.show(); traffic.raise() }
+            else if (name === "dashboard") dashboard.reveal()
+            else account.reveal()
+        }
     }
     Timer { id: copiedNote; interval: 1400 }
 
@@ -118,6 +122,7 @@ Window {
                         Repeater {
                             model: [
                                 { t: "Traffic", f: function() { traffic.show(); traffic.raise() } },
+                                { t: "Dashboard", f: function() { dashboard.reveal() } },
                                 { t: "Account", f: function() { account.reveal() } },
                                 { t: "Terms and agreement", f: function() { backend.openTerms() } },
                                 { t: "Open official client", f: function() { backend.openOfficial() } },
@@ -356,4 +361,5 @@ Window {
 
     TrafficWindow { id: traffic }
     AccountWindow { id: account }
+    StatsWindow { id: dashboard }
 }

@@ -17,7 +17,7 @@ for tool in ip ss pgrep; do
 done
 
 mkdir -p "$DEST" "$BIN" "$APPS"
-install -m 644 "$SRC"/Main.qml "$SRC"/TrafficWindow.qml "$SRC"/AccountWindow.qml "$DEST"/
+install -m 644 "$SRC"/Main.qml "$SRC"/TrafficWindow.qml "$SRC"/AccountWindow.qml "$SRC"/StatsWindow.qml "$DEST"/
 install -m 755 "$SRC"/omarchy_gp.py "$SRC"/setup-engine.sh "$SRC"/omarchy-gp-helper "$DEST"/
 ln -sf "$DEST/omarchy_gp.py" "$BIN/omarchy-gp"
 

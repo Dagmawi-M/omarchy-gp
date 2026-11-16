@@ -7,6 +7,7 @@ Omarchy / Arch with Hyprland.
 - Status, gateway, IP address and data counters
 - A traffic window that shows which connections go through the VPN and which
   go straight to the internet, with a "check a site" box
+- A dashboard with time connected and data used per day
 - An account window for adding or changing the portal, username and password
 
 It can connect in two ways:
@@ -53,6 +54,8 @@ To remove everything: `./uninstall.sh` and `sudo ./setup-engine.sh --remove`.
 | `omarchy-gp` | Show or hide the panel |
 | `omarchy-gp connect` | Connect with the saved account |
 | `omarchy-gp disconnect` | Disconnect |
+| `omarchy-gp traffic` | Open the traffic window |
+| `omarchy-gp dashboard` | Open the usage dashboard |
 | `omarchy-gp status` | Print JSON for waybar |
 
 First time: open the settings button (top right of the panel), choose

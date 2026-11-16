@@ -11,6 +11,7 @@ Usage:
   omarchy-gp disconnect   disconnect
   omarchy-gp traffic      open the traffic window
   omarchy-gp account      open the account window
+  omarchy-gp dashboard    open the usage dashboard
   omarchy-gp status       print waybar JSON and exit
 """
 import ipaddress
@@ -26,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import date, timedelta
 from pathlib import Path
 
 APP = "omarchy-gp"
@@ -131,6 +133,37 @@ def human_time(s):
     if s < 3600:
         return f"{s // 60} min"
     return f"{s // 3600} h {s % 3600 // 60} min"
+
+
+HISTORY = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state") / APP / "history.json"
+
+
+def load_history():
+    """{"YYYY-MM-DD": {"seconds", "rx", "tx", "sessions"}} of time and data on the VPN."""
+    try:
+        days = json.loads(HISTORY.read_text())
+        return days if isinstance(days, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_history(days):
+    try:
+        HISTORY.parent.mkdir(parents=True, exist_ok=True)
+        tmp = HISTORY.with_suffix(".tmp")
+        tmp.write_text(json.dumps(days, indent=1) + "\n")
+        tmp.replace(HISTORY)
+    except OSError:
+        pass
+
+
+def long_time(s):
+    s = int(s)
+    return f"{s // 3600} h {s % 3600 // 60} min" if s >= 3600 else f"{s // 60} min"
+
+
+def short_time(s):
+    return f"{s / 3600:.1f}h" if s >= 3600 else f"{int(s // 60)}m"
 
 
 def log_size():
@@ -308,7 +341,7 @@ def main():
         return 0
     if cmd == "status":
         return waybar_status()
-    if cmd not in ("toggle", "connect", "disconnect", "traffic", "account"):
+    if cmd not in ("toggle", "connect", "disconnect", "traffic", "account", "dashboard"):
         print(f"{APP}: unknown command '{cmd}'. Try: {APP} --help", file=sys.stderr)
         return 2
     return run_panel(cmd)
@@ -323,6 +356,7 @@ def run_panel(cmd):
     class Backend(QObject):
         changed = Signal()
         trafficChanged = Signal()
+        statsChanged = Signal()
         siteChecked = Signal(str, bool)
         toggleRequested = Signal()
         accountNeeded = Signal()
@@ -345,6 +379,9 @@ def run_panel(cmd):
             self._traffic_on = False
             self._names = {}
             self._asked = set()
+            self._days = load_history()
+            self._last = None      # (rx, tx, monotonic stamp) at the previous tick while up
+            self._saved_at = 0.0
             self._lock = threading.Lock()
             threading.Thread(target=self._loop, args=(self._refresh, 2), daemon=True).start()
             threading.Thread(target=self._loop, args=(self._refresh_traffic, 2), daemon=True).start()
@@ -366,6 +403,71 @@ def run_panel(cmd):
         dns = Property(str, lambda s: s._t["dns"], notify=trafficChanged)
         dnsViaVpn = Property(bool, lambda s: s._t["dnsViaVpn"], notify=trafficChanged)
         trafficReady = Property(bool, lambda s: s._t["ready"], notify=trafficChanged)
+
+        # ---- usage history ----------------------------------------------
+        def _track(self, up):
+            """Add the time and data since the last tick to today's totals."""
+            now, force = time.monotonic(), False
+            if up:
+                day = self._days.setdefault(date.today().isoformat(), {"seconds": 0, "rx": 0, "tx": 0, "sessions": 0})
+                rx, tx = counter("rx_bytes"), counter("tx_bytes")
+                if self._last is None:
+                    day["sessions"] += 1
+                    force = True
+                else:
+                    lrx, ltx, at = self._last
+                    day["seconds"] += min(now - at, 10)
+                    day["rx"] += rx - lrx if rx >= lrx else rx
+                    day["tx"] += tx - ltx if tx >= ltx else tx
+                self._last = (rx, tx, now)
+            else:
+                force = self._last is not None
+                self._last = None
+            if force or (up and now - self._saved_at > 30):
+                for old in sorted(self._days)[:-180]:
+                    del self._days[old]
+                save_history(self._days)
+                self._saved_at = now
+                self.statsChanged.emit()
+
+        def _stats(self):
+            today = date.today()
+
+            def rec(d):
+                return self._days.get(d.isoformat(), {"seconds": 0, "rx": 0, "tx": 0, "sessions": 0})
+
+            def total(n):
+                rs = [rec(today - timedelta(i)) for i in range(n)]
+                count = sum(r["sessions"] for r in rs)
+                return {"time": long_time(sum(r["seconds"] for r in rs)),
+                        "data": human_bytes(sum(r["rx"] + r["tx"] for r in rs)),
+                        "sessions": f"{count} session" + ("" if count == 1 else "s")}
+
+            days = []
+            for i in range(13, -1, -1):
+                d = today - timedelta(i)
+                r = rec(d)
+                days.append({"day": d.strftime("%a"), "num": d.day, "today": i == 0,
+                             "seconds": r["seconds"], "bytes": r["rx"] + r["tx"],
+                             "time": long_time(r["seconds"]), "data": human_bytes(r["rx"] + r["tx"]),
+                             "timeShort": short_time(r["seconds"]), "dataShort": human_bytes(r["rx"] + r["tx"])})
+            top_s = max(x["seconds"] for x in days) or 1
+            top_b = max(x["bytes"] for x in days) or 1
+            for x in days:
+                x["timeFrac"], x["dataFrac"] = x["seconds"] / top_s, x["bytes"] / top_b
+            recent = []
+            for key in sorted(self._days, reverse=True)[:60]:
+                r, d = self._days[key], date.fromisoformat(key)
+                recent.append({"label": "Today" if d == today else d.strftime("%a %d %b"), "today": d == today,
+                               "time": long_time(r["seconds"]), "down": human_bytes(r["rx"]),
+                               "up": human_bytes(r["tx"]), "count": str(r["sessions"])})
+            return {"today": total(1), "week": total(7), "month": total(30), "days": days, "recent": recent}
+
+        stats = Property("QVariantMap", _stats, notify=statsChanged)
+
+        @Slot()
+        def refreshStats(self):
+            self.statsChanged.emit()
 
         # ---- polling ----------------------------------------------------
         @staticmethod
@@ -406,6 +508,7 @@ def run_panel(cmd):
                 else:
                     self._uptime, self._details_at = None, 0.0
                     d["ip"], d["uptime"], d["gateway"] = "", "", ""
+                self._track(up)
                 if self._was_up and not up and not self._busy:
                     quiet(["notify-send", "-a", "GlobalProtect", "-t", "6000", "VPN disconnected",
                            "The tunnel went down. Open the panel to reconnect."])
@@ -831,7 +934,7 @@ def run_panel(cmd):
                 self.connectVpn()
             elif name == "disconnect":
                 self.disconnectVpn()
-            elif name in ("traffic", "account"):
+            elif name in ("traffic", "account", "dashboard"):
                 self.windowRequested.emit(name)
             else:
                 self.toggleRequested.emit()
