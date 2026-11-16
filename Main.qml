@@ -8,7 +8,7 @@ Window {
     width: 320; height: 450
     minimumWidth: 320; maximumWidth: 320
     minimumHeight: 450; maximumHeight: 450
-    visible: true
+    visible: !startHidden
     title: "GlobalProtect"
     color: "#0B0C0E"
 
@@ -24,7 +24,7 @@ Window {
     readonly property string shield: "M12 3l7 3v5.5c0 4.3-2.9 8.1-7 9.5-4.1-1.4-7-5.2-7-9.5V6l7-3z"
 
     function reveal() { win.show(); win.raise(); win.requestActivate(); backend.place(); primaryBtn.forceActiveFocus() }
-    Component.onCompleted: reveal()
+    Component.onCompleted: if (!startHidden) reveal()
     onClosing: function(close) { close.accepted = false; win.hide() }
     Shortcut { sequence: "Escape"; onActivated: win.hide() }
 

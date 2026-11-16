@@ -32,6 +32,19 @@ Categories=Network;
 StartupWMClass=omarchy-gp
 EOF
 
+# Start with the desktop session, in the background, so the VPN reconnects at
+# login and the dashboard keeps counting. Remove this file to turn that off.
+AUTO="${XDG_CONFIG_HOME:-$HOME/.config}/autostart"
+mkdir -p "$AUTO"
+cat > "$AUTO/omarchy-gp.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=GlobalProtect Panel
+Exec=$BIN/omarchy-gp start
+X-GNOME-Autostart-enabled=true
+NoDisplay=true
+EOF
+
 echo "Installed omarchy-gp to $DEST"
 echo "Run it with: omarchy-gp"
 case ":$PATH:" in *":$BIN:"*) ;; *) echo "Note: $BIN is not on your PATH. Run $BIN/omarchy-gp instead." ;; esac

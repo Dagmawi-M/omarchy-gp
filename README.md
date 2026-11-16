@@ -3,7 +3,13 @@
 A small, modern panel for the official Palo Alto GlobalProtect VPN client on
 Omarchy / Arch with Hyprland.
 
+<p>
+  <img src="docs/panel.png" alt="The panel showing a connected VPN" width="240">
+  <img src="docs/traffic.png" alt="The traffic window listing connections by destination" width="520">
+</p>
+
 - One-click connect and disconnect
+- Stays connected: reconnects after a drop and connects again at login
 - Status, gateway, IP address and data counters
 - A traffic window that shows which connections go through the VPN and which
   go straight to the internet, with a "check a site" box
@@ -52,6 +58,7 @@ To remove everything: `./uninstall.sh` and `sudo ./setup-engine.sh --remove`.
 | Command | What it does |
 |---|---|
 | `omarchy-gp` | Show or hide the panel |
+| `omarchy-gp start` | Start in the background without showing the panel |
 | `omarchy-gp connect` | Connect with the saved account |
 | `omarchy-gp disconnect` | Disconnect |
 | `omarchy-gp traffic` | Open the traffic window |
@@ -65,6 +72,22 @@ asks you to authenticate.
 
 Esc hides a window. The panel keeps running in the background so it reopens
 instantly; choose **Quit** in settings to stop it.
+
+## Staying connected
+
+Once you have connected, the panel remembers that you want the VPN up. It
+reconnects by itself if the tunnel drops, and connects again when you log in
+(the installer adds a background autostart entry). Pressing **Disconnect**
+turns that off until you next connect.
+
+To stop it starting at login, delete `~/.config/autostart/omarchy-gp.desktop`.
+
+## Dashboard
+
+<img src="docs/dashboard.png" alt="The dashboard with daily time and data totals" width="620">
+
+Time connected and data through the VPN, per day. It is recorded only while
+the panel is running, and stored in `~/.local/state/omarchy-gp/history.json`.
 
 ## Waybar
 
@@ -92,9 +115,10 @@ Optional styling in `style.css`:
 
 - Web (SAML) logins and one-time codes are not handled. Use **Open official
   client** in settings for those.
-- The traffic window lists TCP connections by app and IP address. It does not
-  look up site names, because those lookups could themselves be sent to your
-  organisation's DNS servers.
+- The traffic window names a site only when the name is already in your
+  machine's DNS cache. It never looks up public addresses itself, because
+  those lookups could be sent to your organisation's DNS servers. It shows
+  which sites are contacted, not what you do on them.
 - App names are only shown for your own processes.
 
 ## Troubleshooting
@@ -104,3 +128,10 @@ Optional styling in `style.css`:
 - **"This portal needs your password":** open **Account** in settings.
 - **Nothing happens on Connect:** check the services with
   `systemctl status gpd` and `systemctl --user status gpa`.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
+
+This project is not affiliated with Palo Alto Networks. GlobalProtect is their
+trademark.

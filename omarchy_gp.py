@@ -7,6 +7,7 @@ agent. The official window (PanGPUI) is always available as a fallback.
 
 Usage:
   omarchy-gp              show or hide the panel
+  omarchy-gp start        start in the background without showing the panel
   omarchy-gp connect      connect with the saved account
   omarchy-gp disconnect   disconnect
   omarchy-gp traffic      open the traffic window
@@ -84,7 +85,10 @@ def vpn_engine():
 
 
 def has_official():
-    return os.path.exists(os.path.join(GP_DIR, "PanGPUI"))
+    """The official client is installed and its agent has not been switched off."""
+    if not os.path.exists(os.path.join(GP_DIR, "PanGPUI")):
+        return False
+    return run(["systemctl", "--user", "is-enabled", "gpa.service"], 5).strip() != "masked"
 
 
 def helper_ready():
@@ -184,6 +188,20 @@ def save_config(portal, username):
         CONFIG.write_text(json.dumps(cfg, indent=2) + "\n")
     except OSError:
         pass
+
+
+def update_config(**values):
+    try:
+        CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        cfg = load_config()
+        cfg.update(values)
+        CONFIG.write_text(json.dumps(cfg, indent=2) + "\n")
+    except OSError:
+        pass
+
+
+def notify(title, body):
+    quiet(["notify-send", "-a", "GlobalProtect", "-t", "6000", title, body])
 
 
 def official_account():
@@ -324,7 +342,7 @@ def main():
         return 0
     if cmd == "status":
         return waybar_status()
-    if cmd not in ("toggle", "connect", "disconnect", "traffic", "account", "dashboard"):
+    if cmd not in ("toggle", "start", "connect", "disconnect", "traffic", "account", "dashboard"):
         print(f"{APP}: unknown command '{cmd}'. Try: {APP} --help", file=sys.stderr)
         return 2
     return run_panel(cmd)
@@ -366,9 +384,15 @@ def run_panel(cmd):
             self._last = None      # (rx, tx, monotonic stamp) at the previous tick while up
             self._saved_at = 0.0
             self._first_tick = True
+            # "wanted" remembers that the user wants the VPN up, across restarts,
+            # so the panel reconnects after a drop and connects again at login.
+            self._want = bool(load_config().get("wanted"))
+            self._keeping = False
             self._lock = threading.Lock()
             threading.Thread(target=self._loop, args=(self._refresh, 2), daemon=True).start()
             threading.Thread(target=self._loop, args=(self._refresh_traffic, 2), daemon=True).start()
+            if self._want:
+                self._keep_up(announce=False)
 
         # ---- properties -------------------------------------------------
         state = Property(str, lambda s: s._d["state"], notify=changed)
@@ -388,6 +412,49 @@ def run_panel(cmd):
         dns = Property(str, lambda s: s._t["dns"], notify=trafficChanged)
         dnsViaVpn = Property(bool, lambda s: s._t["dnsViaVpn"], notify=trafficChanged)
         trafficReady = Property(bool, lambda s: s._t["ready"], notify=trafficChanged)
+
+        # ---- staying connected ------------------------------------------
+        def _set_want(self, want):
+            if want != self._want:
+                self._want = want
+                update_config(wanted=want)
+
+        def _keep_up(self, announce):
+            """Bring the VPN back, retrying with growing pauses. Stops as soon as the
+            user disconnects, or when it needs them (setup or a rejected password)."""
+            if self._keeping:
+                return
+            self._keeping = True
+
+            def work():
+                try:
+                    for pause in (4, 10, 30, 60, 120, 300, 300, 300):
+                        for _ in range(pause):
+                            if not self._want:
+                                return
+                            time.sleep(1)
+                        if iface_state()[0]:
+                            return
+                        if self._busy:
+                            continue
+                        if vpn_engine() != "openconnect" or not helper_ready():
+                            return
+                        self.connectVpn()
+                        for _ in range(240):
+                            time.sleep(0.5)
+                            if not self._busy:
+                                break
+                        if iface_state()[0]:
+                            if announce:
+                                notify("VPN reconnected", "You are back on the VPN.")
+                            return
+                        if re.search(r"sign|password|account|setup", self._error, re.I):
+                            return
+                    if announce:
+                        notify("VPN is still down", "Could not reconnect. Open the panel to try again.")
+                finally:
+                    self._keeping = False
+            threading.Thread(target=work, daemon=True).start()
 
         # ---- usage history ----------------------------------------------
         def _track(self, up):
@@ -498,8 +565,13 @@ def run_panel(cmd):
                     d["ip"], d["uptime"], d["gateway"] = "", "", ""
                 self._track(up)
                 if self._was_up and not up and not self._busy:
-                    quiet(["notify-send", "-a", "GlobalProtect", "-t", "6000", "VPN disconnected",
-                           "The tunnel went down. Open the panel to reconnect."])
+                    if self._want and vpn_engine() == "openconnect":
+                        notify("VPN dropped", "Reconnecting in the background.")
+                        self._keep_up(announce=True)
+                    else:
+                        notify("VPN disconnected", "The tunnel went down. Open the panel to reconnect.")
+                if up and not self._busy and not self._want and IFACE == OC_IFACE:
+                    self._set_want(True)
                 if not self._busy:
                     self._was_up = up
                 if self._busy:
@@ -627,6 +699,7 @@ def run_panel(cmd):
             if typed:
                 keyring("store", portal, username, password)
             save_config(portal, username)
+            self._set_want(True)
             if self._cancel:
                 return
             session = "\n".join([got.get("CONNECT_URL") or "https://" + got.get("HOST", portal),
@@ -687,6 +760,7 @@ def run_panel(cmd):
 
         @Slot()
         def disconnectVpn(self):
+            self._set_want(False)
             self._start("disconnecting", self._do_disconnect)
 
         @Slot(str, str, str, result=str)
@@ -736,6 +810,7 @@ def run_panel(cmd):
 
         @Slot()
         def cancel(self):
+            self._set_want(False)
             self._cancel = True
 
         @Slot()
@@ -819,6 +894,8 @@ def run_panel(cmd):
                 self.disconnectVpn()
             elif name in ("traffic", "account", "dashboard"):
                 self.windowRequested.emit(name)
+            elif name == "start":
+                pass  # already running
             else:
                 self.toggleRequested.emit()
 
@@ -880,10 +957,11 @@ def run_panel(cmd):
     server.newConnection.connect(on_client)
     engine = QQmlApplicationEngine()
     engine.rootContext().setContextProperty("backend", backend)
+    engine.rootContext().setContextProperty("startHidden", cmd == "start")
     engine.load(QUrl.fromLocalFile(str(HERE / "Main.qml")))
     if not engine.rootObjects():
         return 1
-    if cmd != "toggle":
+    if cmd not in ("toggle", "start"):
         QTimer.singleShot(0, lambda: backend.command(cmd))
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     return app.exec()
