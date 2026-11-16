@@ -22,6 +22,7 @@ Window {
 
     function reveal() { backend.refreshStats(); show(); raise(); requestActivate() }
     Shortcut { sequence: "Escape"; onActivated: sw.hide() }
+    Timer { interval: 5000; repeat: true; running: sw.visible; onTriggered: backend.refreshStats() }
 
     component Card: Rectangle {
         radius: 24; color: sw.surface

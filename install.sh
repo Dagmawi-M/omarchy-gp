@@ -35,9 +35,7 @@ EOF
 echo "Installed omarchy-gp to $DEST"
 echo "Run it with: omarchy-gp"
 case ":$PATH:" in *":$BIN:"*) ;; *) echo "Note: $BIN is not on your PATH. Run $BIN/omarchy-gp instead." ;; esac
-if ! command -v globalprotect >/dev/null; then
-    echo "Note: the official GlobalProtect client was not found. Install it before connecting."
-fi
+command -v openconnect >/dev/null || echo "Note: openconnect is not installed. Run: sudo pacman -S openconnect vpnc"
 if [ ! -x /usr/local/libexec/omarchy-gp-helper ]; then
     echo "First connect: press 'Finish setup' in the panel and approve once,"
     echo "or run: sudo $SRC/setup-engine.sh"

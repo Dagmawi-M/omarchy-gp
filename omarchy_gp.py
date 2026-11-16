@@ -17,9 +17,7 @@ Usage:
 import ipaddress
 import json
 import os
-import pty
 import re
-import select
 import shutil
 import signal
 import socket
@@ -42,8 +40,6 @@ OC_IFACE = "gpoc0"         # tunnel made by the built-in (openconnect) engine
 HELPER = "/usr/local/libexec/omarchy-gp-helper"
 OC_PIDFILE = Path("/run/omarchy-gp-openconnect.pid")
 OC_LOG = Path("/run/omarchy-gp-openconnect.log")
-CONNECT_TIMEOUT = 75
-SERVICE_LOG = Path(GP_DIR) / "PanGPS.log"
 PANEL_WIDTH = 320
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 HOST = re.compile(r"[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?")
@@ -85,6 +81,10 @@ def vpn_engine():
     if choice in ("openconnect", "official"):
         return choice
     return "openconnect" if shutil.which("openconnect") else "official"
+
+
+def has_official():
+    return os.path.exists(os.path.join(GP_DIR, "PanGPUI"))
 
 
 def helper_ready():
@@ -151,7 +151,8 @@ def save_history(days):
     try:
         HISTORY.parent.mkdir(parents=True, exist_ok=True)
         tmp = HISTORY.with_suffix(".tmp")
-        tmp.write_text(json.dumps(days, indent=1) + "\n")
+        tidy = {k: dict(v, seconds=round(v.get("seconds", 0))) for k, v in days.items()}
+        tmp.write_text(json.dumps(tidy, indent=1) + "\n")
         tmp.replace(HISTORY)
     except OSError:
         pass
@@ -164,24 +165,6 @@ def long_time(s):
 
 def short_time(s):
     return f"{s / 3600:.1f}h" if s >= 3600 else f"{int(s // 60)}m"
-
-
-def log_size():
-    try:
-        return SERVICE_LOG.stat().st_size
-    except OSError:
-        return 0
-
-
-def log_since(offset):
-    """Text the VPN service has logged since `offset` (handles log rotation)."""
-    try:
-        with open(SERVICE_LOG, "rb") as f:
-            if SERVICE_LOG.stat().st_size >= offset:
-                f.seek(offset)
-            return f.read().decode(errors="ignore")
-    except OSError:
-        return ""
 
 
 def load_config():
@@ -254,37 +237,37 @@ PEER = re.compile(r"^\[?(?:::ffff:)?([0-9a-fA-F:.]+)\]?:(\d+)$")
 
 
 def live_connections():
-    """Established TCP connections grouped by app and destination."""
+    """Open connections grouped by app and destination: TCP, plus connected UDP
+    sockets, which is how browsers carry QUIC (most Google and YouTube traffic)."""
     routes = route_table()
     groups, vpn_n, direct_n = {}, 0, 0
-    for line in run(["ss", "-HtnpiO", "state", "established"], 8).splitlines():
-        tok = line.split()
-        if len(tok) < 4:
-            continue
-        m = PEER.match(tok[3])
-        if not m:
-            continue
-        ip = m.group(1)
-        try:
-            if ipaddress.ip_address(ip).is_loopback:
+    sources = ((["ss", "-HtnpiO", "state", "established"], False), (["ss", "-HunpO"], True))
+    for cmd, udp in sources:
+        for line in run(cmd, 8).splitlines():
+            ends = [m for m in (PEER.match(t) for t in line.split()) if m]
+            if len(ends) < 2:
+                continue  # an unconnected socket has "*" as its peer
+            ip, port = ends[1].group(1), ends[1].group(2)
+            try:
+                if ipaddress.ip_address(ip).is_loopback or ipaddress.ip_address(ip).is_unspecified:
+                    continue
+            except ValueError:
                 continue
-        except ValueError:
-            continue
-        app = re.search(r'users:\(\("([^"]+)"', line)
-        sent = re.search(r"bytes_sent:(\d+)", line)
-        recv = re.search(r"bytes_received:(\d+)", line)
-        vpn = via_vpn(ip, routes)
-        vpn_n, direct_n = vpn_n + vpn, direct_n + (not vpn)
-        g = groups.setdefault((app.group(1) if app else "Other", ip, vpn), [0, 0])
-        g[0] += (int(sent.group(1)) if sent else 0) + (int(recv.group(1)) if recv else 0)
-        g[1] += 1
+            if udp and port == "53":
+                continue  # DNS lookups, not a site
+            app = re.search(r'users:\(\("([^"]+)"', line)
+            sent = re.search(r"bytes_sent:(\d+)", line)
+            recv = re.search(r"bytes_received:(\d+)", line)
+            vpn = via_vpn(ip, routes)
+            vpn_n, direct_n = vpn_n + vpn, direct_n + (not vpn)
+            g = groups.setdefault((app.group(1) if app else "Other", ip, vpn, udp), [0, 0])
+            g[0] += (int(sent.group(1)) if sent else 0) + (int(recv.group(1)) if recv else 0)
+            g[1] += 1
     rows = [
-        {"app": a, "dest": ip, "vpn": vpn, "data": human_bytes(b), "count": c}
-        for (a, ip, vpn), (b, c) in groups.items()
+        {"app": a, "dest": ip, "vpn": vpn, "udp": udp, "data": "" if udp else human_bytes(b), "count": c}
+        for (a, ip, vpn, udp), (b, c) in groups.items()
     ]
-    # A stable order, so rows do not jump around as byte counts change.
-    rows.sort(key=lambda r: (not r["vpn"], r["app"].lower(), r["dest"]))
-    return rows[:300], vpn_n, direct_n
+    return rows[:400], vpn_n, direct_n
 
 
 def dns_cache():
@@ -348,7 +331,7 @@ def main():
 
 
 def run_panel(cmd):
-    from PySide6.QtCore import Property, QObject, QUrl, Signal, Slot
+    from PySide6.QtCore import Property, QLockFile, QObject, QTimer, QUrl, Signal, Slot
     from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase, QGuiApplication
     from PySide6.QtNetwork import QLocalServer, QLocalSocket
     from PySide6.QtQml import QQmlApplicationEngine
@@ -382,6 +365,7 @@ def run_panel(cmd):
             self._days = load_history()
             self._last = None      # (rx, tx, monotonic stamp) at the previous tick while up
             self._saved_at = 0.0
+            self._first_tick = True
             self._lock = threading.Lock()
             threading.Thread(target=self._loop, args=(self._refresh, 2), daemon=True).start()
             threading.Thread(target=self._loop, args=(self._refresh_traffic, 2), daemon=True).start()
@@ -396,6 +380,7 @@ def run_panel(cmd):
         down = Property(str, lambda s: s._d["down"], notify=changed)
         up = Property(str, lambda s: s._d["up"], notify=changed)
         error = Property(str, lambda s: s._d["error"], notify=changed)
+        hasOfficial = Property(bool, lambda s: has_official(), constant=True)
         needsSetup = Property(bool, lambda s: s._d["needsSetup"], notify=changed)
         connections = Property("QVariantList", lambda s: s._t["connections"], notify=trafficChanged)
         vpnCount = Property(int, lambda s: s._t["vpnCount"], notify=trafficChanged)
@@ -412,7 +397,9 @@ def run_panel(cmd):
                 day = self._days.setdefault(date.today().isoformat(), {"seconds": 0, "rx": 0, "tx": 0, "sessions": 0})
                 rx, tx = counter("rx_bytes"), counter("tx_bytes")
                 if self._last is None:
-                    day["sessions"] += 1
+                    # A panel restart while already connected is not a new session.
+                    if not (self._first_tick and day["sessions"]):
+                        day["sessions"] += 1
                     force = True
                 else:
                     lrx, ltx, at = self._last
@@ -423,6 +410,7 @@ def run_panel(cmd):
             else:
                 force = self._last is not None
                 self._last = None
+            self._first_tick = False
             if force or (up and now - self._saved_at > 30):
                 for old in sorted(self._days)[:-180]:
                     del self._days[old]
@@ -581,119 +569,22 @@ def run_panel(cmd):
             except OSError:
                 pass
 
-        def _tend_ui(self, seen):
-            """While the official client finishes a connection: keep its windows on
-            a hidden workspace, and dismiss its agreement page, which otherwise
-            blocks the connection until someone closes it."""
-            if not shutil.which("hyprctl"):
-                return
-            try:
-                clients = json.loads(run(["hyprctl", "clients", "-j"], 5) or "[]")
-            except ValueError:
-                return
-            now = time.monotonic()
-            for c in clients:
-                if c.get("class") != "PanGPUI":
-                    continue
-                addr = c.get("address", "")
-                if c.get("workspace", {}).get("name") != "special:gpbg":
-                    quiet(["hyprctl", "dispatch", "movetoworkspacesilent", f"special:gpbg,address:{addr}"])
-                if c.get("title", "").startswith("Welcome to GlobalProtect"):
-                    if now - seen.setdefault(addr, now) > 1.5:  # give the page a moment to load
-                        quiet(["hyprctl", "dispatch", "closewindow", f"address:{addr}"])
-
         # ---- connect ----------------------------------------------------
         def _do_connect(self, portal, username, password):
-            """Ask the agent to connect, answer its sign-in prompts, then let the
-            official UI (hidden) finish the gateway step, which it only does with
-            its own UI attached."""
-            proc = master = None
             try:
                 if iface_state()[0]:
                     return
                 if vpn_engine() == "openconnect":
                     self._connect_openconnect(portal, username, password)
-                    return
-                if not shutil.which("globalprotect"):
-                    self._error = "The official GlobalProtect client is not installed."
-                    return
-                if not portal:
-                    self._error = "No portal is set. Add your account in Settings."
-                    self.accountNeeded.emit()
-                    return
-                self._kill_ui()
-                log_at, nudge_at, seen_windows = log_size(), 0.0, {}
-                master, slave = pty.openpty()
-                args = ["globalprotect", "connect", "--portal", portal]
-                if username:
-                    args += ["--username", username]
-                proc = subprocess.Popen(args, stdin=slave, stdout=slave, stderr=slave, start_new_session=True)
-                os.close(slave)
-
-                text, seen = "", 0
-                prompted = pass_sent = ui_started = False
-                pass_at, t0 = 0.0, time.monotonic()
-                while time.monotonic() - t0 < CONNECT_TIMEOUT and not self._cancel:
-                    if iface_state()[0]:
-                        break
-                    if not ui_started:
-                        ready, _, _ = select.select([master], [], [], 0.5)
-                        if ready:
-                            try:
-                                text += ANSI.sub("", os.read(master, 4096).decode(errors="ignore"))
-                            except OSError:
-                                pass
-                        fresh = text[seen:]
-                        if pass_sent and re.search(r"authentication failed|invalid (username|password)", fresh, re.I):
-                            self._error = "Sign-in was rejected. Check the username and password."
-                            self.accountNeeded.emit()
-                            return
-                        if re.search(r"username[^\n]*:\s*$", fresh, re.I):
-                            prompted, seen = True, len(text)
-                            os.write(master, (username + "\n").encode())
-                        elif re.search(r"password[^\n]*:\s*$", fresh, re.I):
-                            prompted, seen = True, len(text)
-                            if not password or pass_sent:
-                                self._error = ("Sign-in was rejected. Check the username and password."
-                                               if pass_sent else "This portal needs your password. Add it in Settings.")
-                                self.accountNeeded.emit()
-                                return
-                            os.write(master, (password + "\n").encode())
-                            pass_sent, pass_at = True, time.monotonic()
-                        # Portal sign-in takes around ten seconds. Only once it is
-                        # done can the official UI finish the gateway step.
-                        signed_in = "portal status is Connected" in log_since(log_at)
-                        waiting_on_us = prompted and not pass_sent
-                        if signed_in or (not waiting_on_us and time.monotonic() - max(t0, pass_at) > 25):
-                            self._stop(proc)
-                            self._start_ui()
-                            ui_started = True
-                    else:
-                        if time.monotonic() - nudge_at > 5:
-                            nudge_at = time.monotonic()
-                            quiet(["globalprotect", "launch-ui"])
-                        self._tend_ui(seen_windows)
-                        time.sleep(0.5)
-
-                if self._cancel:
-                    self._kill_ui()
-                    run(["globalprotect", "disconnect"], 30)
-                elif iface_state()[0]:
-                    save_config(portal, username)
-                    time.sleep(3)
-                    self._kill_ui()  # the tunnel is held by the service, not the window
+                elif has_official():
+                    # The official engine only finishes a connection from its own window.
+                    self._error = "One-click connect needs openconnect. The official client has been opened instead."
+                    self.openOfficial()
                 else:
-                    self._error = f"The VPN did not come up within {CONNECT_TIMEOUT} seconds."
-                    self._kill_ui()
-            except OSError as exc:
-                self._error = f"Could not start the GlobalProtect client ({exc.strerror})."
+                    self._error = "openconnect is not installed. Install it, then press Finish setup."
             finally:
-                self._stop(proc)
-                if master is not None:
-                    try:
-                        os.close(master)
-                    except OSError:
-                        pass
+                if self._cancel:
+                    self._was_up = False
                 self._busy = None
                 self._refresh()
 
@@ -759,15 +650,6 @@ def run_panel(cmd):
                     detail = (up.stderr.strip()[:120] if up else "")
                 self._error = "The tunnel did not come up. " + detail
 
-        @staticmethod
-        def _stop(proc):
-            if proc and proc.poll() is None:
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                    proc.wait(3)
-                except (OSError, subprocess.SubprocessError):
-                    pass
-
         def _do_disconnect(self, then=None):
             try:
                 iface_state()
@@ -786,6 +668,7 @@ def run_panel(cmd):
                     self._refresh()
                     then()
                 else:
+                    self._was_up = False
                     self._busy = None
                     self._refresh()
 
@@ -948,13 +831,20 @@ def run_panel(cmd):
         app.setFont(QFont(font, 10))
 
     # Single instance: a second launch passes its command to the first.
-    probe = QLocalSocket()
-    probe.connectToServer(APP)
-    if probe.waitForConnected(300):
-        probe.write(cmd.encode())
-        probe.waitForBytesWritten(500)
-        probe.disconnectFromServer()
-        return 0
+    lock = QLockFile(os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", APP + ".lock"))
+    lock.setStaleLockTime(0)
+    if not lock.tryLock(0):
+        for _ in range(24):  # the first instance may still be starting up
+            probe = QLocalSocket()
+            probe.connectToServer(APP)
+            if probe.waitForConnected(250):
+                probe.write(cmd.encode())
+                probe.waitForBytesWritten(500)
+                probe.waitForDisconnected(1500)
+                return 0
+            time.sleep(0.25)
+        print(f"{APP}: already running but not answering", file=sys.stderr)
+        return 1
     QLocalServer.removeServer(APP)
     server = QLocalServer()
     server.listen(APP)
@@ -975,9 +865,17 @@ def run_panel(cmd):
 
     def on_client():
         sock = server.nextPendingConnection()
-        sock.waitForReadyRead(300)
-        backend.command(bytes(sock.readAll()).decode(errors="ignore").strip() or "toggle")
-        sock.deleteLater()
+
+        def handle():
+            name = bytes(sock.readAll()).decode(errors="ignore").strip()
+            if name:
+                backend.command(name)
+                sock.disconnectFromServer()
+                sock.deleteLater()
+
+        sock.readyRead.connect(handle)
+        if sock.bytesAvailable():
+            handle()
 
     server.newConnection.connect(on_client)
     engine = QQmlApplicationEngine()
@@ -986,7 +884,7 @@ def run_panel(cmd):
     if not engine.rootObjects():
         return 1
     if cmd != "toggle":
-        backend.command(cmd)
+        QTimer.singleShot(0, lambda: backend.command(cmd))
     signal.signal(signal.SIGINT, signal.SIG_DFL)
     return app.exec()
 

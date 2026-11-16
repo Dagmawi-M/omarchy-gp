@@ -124,11 +124,11 @@ Window {
                                 { t: "Traffic", f: function() { traffic.show(); traffic.raise() } },
                                 { t: "Dashboard", f: function() { dashboard.reveal() } },
                                 { t: "Account", f: function() { account.reveal() } },
-                                { t: "Terms and agreement", f: function() { backend.openTerms() } },
-                                { t: "Open official client", f: function() { backend.openOfficial() } },
+                                { t: "Terms and agreement", show: backend.hasTerms(), f: function() { backend.openTerms() } },
+                                { t: "Open official client", show: backend.hasOfficial, f: function() { backend.openOfficial() } },
                                 { t: "Close panel", f: function() { win.hide() } },
                                 { t: "Quit", f: function() { Qt.quit() } }
-                            ]
+                            ].filter(function(m) { return m.show !== false })
                             delegate: Rectangle {
                                 required property var modelData
                                 width: 220; height: 44; radius: 14
@@ -324,7 +324,7 @@ Window {
                 text: win.setup ? "One step left: approve the setup once, then sign in. After that, Connect is one click and never asks for a password."
                     : win.st === "connecting" ? "Using your saved account. This usually takes about thirty seconds."
                     : win.st === "disconnecting" ? "Closing the tunnel."
-                    : win.st === "error" ? "Nothing was changed. Try again, or connect with the official client."
+                    : win.st === "error" ? (backend.hasOfficial ? "Try again, or connect with the official client." : "Check the message above, then try again.")
                     : "Internal services are unavailable until you connect."
             }
         }
@@ -349,7 +349,7 @@ Window {
                 : win.st === "connecting" ? backend.cancel() : backend.connectVpn()
         }
         PillButton {
-            visible: win.st === "error"
+            visible: win.st === "error" && backend.hasOfficial
             width: parent.width; height: 40
             label: "Open official client"
             color: win.st === "error" ? "#2A2E36" : "transparent"

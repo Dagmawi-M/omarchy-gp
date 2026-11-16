@@ -253,12 +253,12 @@ Window {
                             Text {
                                 id: ipText
                                 anchors.left: siteName.right; anchors.leftMargin: 10; anchors.baseline: siteName.baseline
-                                text: (modelData.name ? modelData.dest : "") + (modelData.count > 1 ? "  ×" + modelData.count : "")
+                                text: (modelData.name ? modelData.dest : "") + (modelData.udp ? "  UDP" : "") + (modelData.count > 1 ? "  ×" + modelData.count : "")
                                 color: "#8A8F9A"; font.pixelSize: 12
                             }
                         }
                         Text { width: 150; elide: Text.ElideRight; text: modelData.app; color: tw.textDim; font.pixelSize: 13; anchors.verticalCenter: parent.verticalCenter }
-                        Text { width: 130; text: modelData.data; color: "#C9CCD5"; font.pixelSize: 14 }
+                        Text { width: 130; text: modelData.data || "–"; color: "#C9CCD5"; font.pixelSize: 14 }
                         RouteChip { vpn: modelData.vpn }
                     }
                 }
