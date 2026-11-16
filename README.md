@@ -1,7 +1,11 @@
 # omarchy-gp
 
-A small, modern panel for the official Palo Alto GlobalProtect VPN client on
-Omarchy / Arch with Hyprland.
+[![Licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
+
+A small, modern GlobalProtect VPN client panel for Linux: a GUI for Omarchy and
+Arch Linux on Hyprland, with a waybar item. It connects to Palo Alto
+GlobalProtect portals through openconnect, so the official client is not
+needed.
 
 <p>
   <img src="docs/panel.png" alt="The panel showing a connected VPN" width="240">
@@ -145,6 +149,11 @@ git pull
 
 If the panel then shows **Finish setup**, the root helper changed in that
 version; approve it once.
+
+## Contributing
+
+Bug reports and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md),
+and [SECURITY.md](SECURITY.md) for reporting a vulnerability privately.
 
 ## How it was made
 
