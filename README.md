@@ -64,6 +64,7 @@ To remove everything: `./uninstall.sh` and `sudo ./setup-engine.sh --remove`.
 | `omarchy-gp traffic` | Open the traffic window |
 | `omarchy-gp dashboard` | Open the usage dashboard |
 | `omarchy-gp status` | Print JSON for waybar |
+| `omarchy-gp doctor` | Check that everything needed is in place |
 
 First time: open the settings button (top right of the panel), choose
 **Account**, and enter your portal, username and password. The password is
@@ -123,11 +124,27 @@ Optional styling in `style.css`:
 
 ## Troubleshooting
 
-- **Connect fails:** the error screen offers the official client. Connect once
-  there, then try the panel again.
-- **"This portal needs your password":** open **Account** in settings.
-- **Nothing happens on Connect:** check the services with
-  `systemctl status gpd` and `systemctl --user status gpa`.
+Run `omarchy-gp doctor` first. It lists what is in place and what is missing.
+
+- **The button says "Finish setup":** the root helper is missing or older than
+  this version. Press it and approve once.
+- **"Sign in once in Settings, Account":** no password is saved yet, or your
+  keyring is locked.
+- **"Sign-in was rejected":** check the username and password in **Account**.
+- **Connected, but internal sites do not load:** your organisation may require
+  the official client's device check. Check the engine log at
+  `/run/omarchy-gp-openconnect.log`.
+
+## Updating
+
+```sh
+cd omarchy-gp
+git pull
+./install.sh
+```
+
+If the panel then shows **Finish setup**, the root helper changed in that
+version; approve it once.
 
 ## Licence
 

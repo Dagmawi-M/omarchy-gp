@@ -14,6 +14,7 @@ Usage:
   omarchy-gp account      open the account window
   omarchy-gp dashboard    open the usage dashboard
   omarchy-gp status       print waybar JSON and exit
+  omarchy-gp doctor       check that everything needed is in place
 """
 import ipaddress
 import json
@@ -93,6 +94,14 @@ def has_official():
 
 def helper_ready():
     return os.access(HELPER, os.X_OK)
+
+
+def helper_current():
+    """The installed root helper matches the one this version ships with."""
+    try:
+        return Path(HELPER).read_bytes() == (HERE / "omarchy-gp-helper").read_bytes()
+    except OSError:
+        return False
 
 
 def keyring(action, portal, username, secret=None):
@@ -294,12 +303,17 @@ def dns_cache():
     This only reads what the machine already looked up. It sends no queries, so
     it cannot reveal anything new to any DNS server.
     """
-    names, alias, via_vpn_scope, scope = {}, {}, False, ""
     # Never let this raise an admin prompt: go through the root helper when it
     # supports it, otherwise ask without prompting (which may return nothing).
     text = run(["sudo", "-n", HELPER, "names"], 5) if helper_ready() else ""
     if "Scope " not in text:
         text = run(["resolvectl", "--no-ask-password", "show-cache"], 5)
+    return parse_dns_cache(text, IFACE)
+
+
+def parse_dns_cache(text, vpn_iface):
+    """Turn `resolvectl show-cache` output into ({ip: name}, any_lookup_via_vpn)."""
+    names, alias, via_vpn_scope, scope = {}, {}, False, ""
     for line in text.splitlines():
         if line.startswith("Scope "):
             m = re.search(r"ifname=(\S+)", line)
@@ -311,7 +325,7 @@ def dns_cache():
         host = f[0].rstrip(".")
         if f[2] in ("A", "AAAA"):
             names[f[3]] = host
-            via_vpn_scope = via_vpn_scope or scope == IFACE
+            via_vpn_scope = via_vpn_scope or scope == vpn_iface
         elif f[2] == "CNAME":
             alias[f[3].rstrip(".")] = host
     for ip, host in names.items():  # walk CNAME chains back to the name that was asked for
@@ -332,6 +346,44 @@ def waybar_status():
     return 0
 
 
+def doctor():
+    """Print what is in place and what is missing. Exit code 0 means ready to connect."""
+    ok = True
+
+    def line(label, good, text, required=True):
+        nonlocal ok
+        ok = ok and (good or not required)
+        print(f"  {'ok ' if good else ('!! ' if required else '-  ')} {label}: {text}")
+
+    print(f"{APP} {VERSION}")
+    eng = vpn_engine()
+    line("engine", True, "built-in (openconnect)" if eng == "openconnect" else "official client only")
+    ver = re.search(r"version v?(\S+)", run(["openconnect", "--version"], 5))
+    line("openconnect", bool(ver), ver.group(1) if ver else "not installed (sudo pacman -S openconnect vpnc)")
+    line("vpnc-script", os.access("/etc/vpnc/vpnc-script", os.X_OK),
+         "found" if os.access("/etc/vpnc/vpnc-script", os.X_OK) else "missing (sudo pacman -S vpnc)")
+    if not helper_ready():
+        line("root helper", False, "not set up (press Finish setup in the panel, or sudo ./setup-engine.sh)")
+    else:
+        line("root helper", helper_current(), "installed" if helper_current()
+             else "out of date (press Finish setup in the panel, or sudo ./setup-engine.sh)")
+    line("passwordless helper", "names" in run(["sudo", "-n", "-l", HELPER], 5) or
+         subprocess.run(["sudo", "-n", "-l", HELPER], stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL).returncode == 0,
+         "allowed" if helper_ready() else "n/a")
+    portal, username = account()
+    line("account", bool(portal and username), f"{username or '(no username)'} at {portal or '(no portal)'}"
+         if portal or username else "none yet (Settings, Account)")
+    line("keyring", bool(shutil.which("secret-tool")),
+         ("password saved" if portal and username and keyring("lookup", portal, username) else "no password saved yet")
+         if shutil.which("secret-tool") else "secret-tool missing (sudo pacman -S libsecret)")
+    up, ip = iface_state()
+    line("tunnel", True, f"up on {IFACE}, {ip}" if up else "down", required=False)
+    line("hyprland", bool(shutil.which("hyprctl")), "found" if shutil.which("hyprctl") else "not found (panel will not dock)", required=False)
+    line("official client", True, "available" if has_official() else "not installed or switched off", required=False)
+    print("Ready to connect." if ok else "Something above needs attention.")
+    return 0 if ok else 1
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "toggle"
     if cmd in ("-h", "--help", "help"):
@@ -342,6 +394,8 @@ def main():
         return 0
     if cmd == "status":
         return waybar_status()
+    if cmd == "doctor":
+        return doctor()
     if cmd not in ("toggle", "start", "connect", "disconnect", "traffic", "account", "dashboard"):
         print(f"{APP}: unknown command '{cmd}'. Try: {APP} --help", file=sys.stderr)
         return 2
@@ -581,7 +635,7 @@ def run_panel(cmd):
                 else:
                     d["state"] = "error" if self._error else "disconnected"
                 d["error"] = self._error
-                d["needsSetup"] = vpn_engine() == "openconnect" and not helper_ready()
+                d["needsSetup"] = vpn_engine() == "openconnect" and not (helper_ready() and helper_current())
                 if d != self._d:
                     self._d = d
                     self.changed.emit()
