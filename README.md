@@ -146,6 +146,10 @@ git pull
 If the panel then shows **Finish setup**, the root helper changed in that
 version; approve it once.
 
+## How it was made
+
+omarchy-gp was designed, directed and tested by me, with the code written using [Claude Code](https://claude.com/claude-code) (Anthropic) as an AI coding assistant.
+
 ## Licence
 
 MIT. See [LICENSE](LICENSE).
